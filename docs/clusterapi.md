@@ -3,6 +3,11 @@
 Status as of the initial Magnum bring-up. Written against the live cluster, not
 from documentation.
 
+> **Update:** the networking blocker described below is resolved. A flat
+> provider network is live on VLAN 100 (`157.20.112.128/25`), floating IPs work,
+> and Octavia is running with the **OVN provider driver** — no amphora VMs. See
+> "Resolved" at the end.
+
 ## Where things stand
 
 Working:
@@ -128,3 +133,90 @@ unproven.
 
 Steps 2–4 are a day's work once step 1 exists. Step 1 is the one that needs a
 decision about how this rack gets tenant traffic in and out.
+
+
+## Resolved
+
+### Provider network (was the blocker)
+
+VLAN 100 is trunked to the hypervisors on `ae1.100`. Each node has a dedicated
+NIC on it (enumerated as `enp6s19`), brought up with no addressing; OVN plugs it
+into `br-ex` via Yaook's `bridgeConfig`:
+
+```yaml
+setup:
+  ovn:
+    controller:
+      configTemplates:
+        - nodeSelectors:
+            - matchLabels: {network.yaook.cloud/neutron-ovn-agent: "true"}
+          bridgeConfig:
+            - {bridgeName: br-ex, uplinkDevice: enp6s19, openstackPhysicalNetwork: physnet1}
+```
+
+Network `public` is flat on `physnet1`, external + shared, `157.20.112.128/25`,
+gateway `.129`, pool `.130-.254`. Instances and floating IPs are both reachable
+from the Juniper — note the subnet lives in the `PUBLIC` VRF, so tests need
+`ping ... routing-instance PUBLIC`.
+
+**Gotcha:** the OVN rollout deadlocks. Yaook serialises hypervisor disruption
+behind an "l2 lock" and one node can sit in `WaitingForDependency` forever.
+Restarting `nova-compute-operator` and `neutron-ovn-operator` clears it. Expect
+this on any future OVN config change.
+
+### Octavia via the OVN provider — no amphorae
+
+Yaook already ships and configures `ovn-octavia-provider` (8.1.0): the `ovn`
+driver is registered, `enabled_provider_agents = ovn`, and `[ovn]` has the
+NB/SB connections and certificates wired up. The only reason load balancers
+were failing is that **amphora is the default provider** and the amphora path
+is broken here (the amphora presents a cert whose Authority Key Id does not
+match Octavia's CA, despite Octavia's own signing key and CA cert matching).
+
+The OVN driver sidesteps all of it — no amphora VM, no management network, no
+certificates, no image, no flavor:
+
+```yaml
+octaviaConfig:
+  api_settings:
+    default_provider_driver: ovn
+    enabled_provider_drivers: "ovn:Octavia OVN driver."
+```
+
+A load balancer now reaches `ACTIVE/ONLINE` in about 20 seconds, and OVN
+programs the datapath directly:
+
+```
+vips: {"192.168.100.250:80"="192.168.100.204:80"}
+```
+
+Verified with real traffic from outside: floating IP -> router -> OVN VIP ->
+backend returns HTTP 200.
+
+Trade-off worth knowing: the OVN provider does TCP/UDP/SCTP only. No
+TERMINATED_HTTPS, no L7 policies, and limited health monitoring. That is fine
+for a Kubernetes API endpoint, which is what CAPI needs.
+
+## Remaining risks for CAPI
+
+**The metadata service is unreliable, and cloud-init depends on it.** The OVN
+metadata agent proxies to `nova-metadata:8775`, which cannot reach the cell1
+RabbitMQ because RabbitMQ's readiness probe times out
+(`rabbitmq-diagnostics` exceeding its 20s limit), so Kubernetes drops it from
+the Service endpoints and callers get ECONNREFUSED. RabbitMQ itself is healthy
+and authenticating clients.
+
+The underlying cause is CPU exhaustion: the Proxmox host runs at load ~42 on 40
+CPUs with 6-9% steal inside the guests. The same pressure produced a Nova
+`MessagingTimeout` during an amphora build.
+
+**Workaround that works today:** boot with `config_drive: true`. User-data is
+then delivered via an attached config drive and the metadata service is not
+involved. This was verified — a cirros instance booted with config drive ran
+its user-data and served traffic, where the same instance without it failed
+20/20 metadata attempts. CAPO supports config drive, so CAPI clusters should
+set it.
+
+The real fix is capacity. Nested KVM on a box that is already saturated will
+keep producing timeouts, and a CAPI cluster build is far more demanding than a
+cirros instance.
