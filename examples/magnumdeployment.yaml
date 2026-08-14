@@ -1,0 +1,32 @@
+apiVersion: magnum.yaook.cloud/v1alpha1
+kind: MagnumDeployment
+metadata:
+  name: magnum
+  namespace: yaook
+spec:
+  keystoneRef:
+    name: keystone
+  issuerRef:
+    name: yaook-internal
+  region:
+    name: YaookRegion
+  targetRelease: "2025.1"
+
+  database:
+    replicas: 1
+    storageClassName: local-path
+    storageSize: 2Gi
+
+  messageQueue:
+    replicas: 1
+    storageClassName: local-path
+    storageSize: 2Gi
+
+  api:
+    replicas: 1
+    ingress:
+      fqdn: magnum.yaook.cloud
+      port: 443
+
+  conductor:
+    replicas: 1
