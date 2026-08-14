@@ -72,6 +72,15 @@ func newUnstructured(gvk schema.GroupVersionKind, name, namespace string, spec m
 	return u
 }
 
+// backendCAIssuer is the Issuer used for the CA behind the MariaDB/RabbitMQ
+// backends. Both infra CRDs require it.
+func backendCAIssuer(cr *magnumv1alpha1.MagnumDeployment) string {
+	if cr.Spec.BackendCAIssuerRef != nil && cr.Spec.BackendCAIssuerRef.Name != "" {
+		return cr.Spec.BackendCAIssuerRef.Name
+	}
+	return "selfsigned-issuer"
+}
+
 func buildMySQLService(cr *magnumv1alpha1.MagnumDeployment) *unstructured.Unstructured {
 	db := cr.Spec.Database
 	return newUnstructured(gvkMySQLService, nameDatabase(cr), cr.Namespace, map[string]any{
@@ -83,6 +92,22 @@ func buildMySQLService(cr *magnumv1alpha1.MagnumDeployment) *unstructured.Unstru
 		"storageSize":      db.StorageSize.String(),
 		"frontendIssuerRef": map[string]any{
 			"name": cr.Spec.IssuerRef.Name,
+		},
+		"backendCAIssuerRef": map[string]any{
+			"name": backendCAIssuer(cr),
+		},
+		// Magnum's migrations pin some tables to utf8mb3_general_ci explicitly
+		// (e.g. "cluster") while others inherit the server default (e.g.
+		// "nodegroup"). Yaook's MariaDB defaults to utf8mb3_unicode_ci, so the
+		// nodegroups_v2 migration fails with "Illegal mix of collations" when it
+		// joins nodegroup.cluster_id to cluster.uuid. This instance serves only
+		// Magnum, so pinning the server collation is safe and keeps every table
+		// consistent.
+		"mysqlConfig": map[string]any{
+			"mysqld": map[string]any{
+				"character-set-server": "utf8mb3",
+				"collation-server":     "utf8mb3_general_ci",
+			},
 		},
 		"proxy": map[string]any{
 			"replicas": int64(db.ProxyReplicas),
@@ -120,7 +145,7 @@ func buildAMQPServer(cr *magnumv1alpha1.MagnumDeployment) *unstructured.Unstruct
 			"name": cr.Spec.IssuerRef.Name,
 		},
 		"backendCAIssuerRef": map[string]any{
-			"name": "selfsigned-issuer",
+			"name": backendCAIssuer(cr),
 		},
 	})
 }

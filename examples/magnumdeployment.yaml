@@ -30,3 +30,11 @@ spec:
 
   conductor:
     replicas: 1
+
+  # The trustee domain must exist in Keystone already. Setting domainID lets
+  # Magnum skip a domain-admin authentication on every policy check.
+  trust:
+    domainName: magnum
+    # domainID: <keystone domain id>
+    # domainAdminSecretRef:
+    #   name: magnum-trustee-admin

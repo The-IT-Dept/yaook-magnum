@@ -13,6 +13,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	netv1 "k8s.io/api/networking/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -95,6 +96,19 @@ func (r *MagnumDeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	}
 
 	// 5. Render magnum.conf and store it.
+	// Trustee domain admin credentials, if provided. Only needed for creating
+	// clusters; listing works with trust.domainID alone.
+	var trustUser, trustPass string
+	if ref := cr.Spec.Trust.DomainAdminSecretRef; ref != nil {
+		sec := &corev1.Secret{}
+		if err := r.Get(ctx, types.NamespacedName{Name: ref.Name, Namespace: cr.Namespace}, sec); err != nil {
+			l.Info("waiting for trustee domain admin secret", "secret", ref.Name)
+			return r.finish(ctx, cr, "Pending", ctrl.Result{RequeueAfter: requeueWaiting})
+		}
+		trustUser = string(sec.Data["username"])
+		trustPass = string(sec.Data["password"])
+	}
+
 	cfg := magnum.Render(magnum.CredentialInput{
 		DBUser: "api", DBPassword: dbPass, DBHost: dbHost(cr), DBName: "magnum",
 		MQUser: "api", MQPassword: mqPass, MQHost: mqHost(cr),
@@ -106,6 +120,10 @@ func (r *MagnumDeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		KeystoneProjDomain: valueOr(idCreds["OS_PROJECT_DOMAIN_NAME"], "Default"),
 		RegionName:         cr.Spec.Region.Name,
 		CAFile:             caFilePath(),
+		TrustDomainName:    cr.Spec.Trust.DomainName,
+		TrustDomainID:      cr.Spec.Trust.DomainID,
+		TrustAdminUser:     trustUser,
+		TrustAdminPassword: trustPass,
 	}, cr.Spec.MagnumConfig)
 
 	configHash := hashString(cfg)
@@ -311,11 +329,31 @@ func (r *MagnumDeploymentReconciler) applyUnstructured(ctx context.Context, cr *
 		return err
 	}
 	desiredSpec, _, _ := unstructured.NestedMap(obj.Object, "spec")
+	currentSpec, _, _ := unstructured.NestedMap(existing.Object, "spec")
+
+	// The Yaook operators continuously write their own annotations and status
+	// onto these objects. Writing unconditionally would race them and produce a
+	// stream of "object has been modified" conflicts, so only update when the
+	// spec we own has actually drifted.
+	sameSpec := equality.Semantic.DeepEqual(desiredSpec, currentSpec)
+	sameOwner := equality.Semantic.DeepEqual(existing.GetOwnerReferences(), obj.GetOwnerReferences())
+	if sameSpec && sameOwner {
+		return nil
+	}
+
 	if err := unstructured.SetNestedMap(existing.Object, desiredSpec, "spec"); err != nil {
 		return err
 	}
 	existing.SetOwnerReferences(obj.GetOwnerReferences())
-	return r.Update(ctx, existing)
+	if err := r.Update(ctx, existing); err != nil {
+		// A conflict here just means the Yaook operator wrote first; the next
+		// reconcile will settle it.
+		if apierrors.IsConflict(err) {
+			return nil
+		}
+		return err
+	}
+	return nil
 }
 
 func (r *MagnumDeploymentReconciler) setCondition(cr *magnumv1alpha1.MagnumDeployment, condType string, status metav1.ConditionStatus, reason, msg string) {

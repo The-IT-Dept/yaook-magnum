@@ -35,6 +35,11 @@ type CredentialInput struct {
 
 	RegionName string
 	CAFile     string
+
+	TrustDomainName    string
+	TrustDomainID      string
+	TrustAdminUser     string
+	TrustAdminPassword string
 }
 
 // Render builds the magnum.conf content. Operator-generated values are written
@@ -50,9 +55,12 @@ func Render(in CredentialInput, overrides map[string]map[string]string) string {
 		"host":          "magnum",
 	}
 
+	// magnum.conf's [api] bind option is "host" (an IPOpt). It defaults to
+	// 127.0.0.1, which makes the container unreachable from the kubelet's
+	// readiness probe and from the Service, so it must be set explicitly.
 	cfg["api"] = Section{
-		"host_ip": "0.0.0.0",
-		"port":    "9511",
+		"host": "0.0.0.0",
+		"port": "9511",
 	}
 
 	cfg["database"] = Section{
@@ -78,10 +86,25 @@ func Render(in CredentialInput, overrides map[string]map[string]string) string {
 	}
 
 	// Magnum talks to the other OpenStack services using these credentials too.
-	cfg["trust"] = Section{
+	trust := Section{
 		"trustee_keystone_interface": "internal",
 		"roles":                      "member",
 	}
+	if in.TrustDomainName != "" {
+		trust["trustee_domain_name"] = in.TrustDomainName
+	}
+	// Setting trustee_domain_id lets Magnum skip the domain-admin
+	// authentication it would otherwise perform on every policy check.
+	if in.TrustDomainID != "" {
+		trust["trustee_domain_id"] = in.TrustDomainID
+	}
+	if in.TrustAdminUser != "" {
+		trust["trustee_domain_admin_name"] = in.TrustAdminUser
+	}
+	if in.TrustAdminPassword != "" {
+		trust["trustee_domain_admin_password"] = in.TrustAdminPassword
+	}
+	cfg["trust"] = trust
 
 	// x509keypair keeps cluster certificates in Magnum's own database, which
 	// avoids a hard dependency on Barbican.
@@ -118,6 +141,11 @@ func Render(in CredentialInput, overrides map[string]map[string]string) string {
 	cfg["keystone_authtoken"]["username"] = in.KeystoneUsername
 	cfg["keystone_authtoken"]["password"] = in.KeystonePassword
 	cfg["keystone_authtoken"]["auth_url"] = in.KeystoneAuthURL
+	cfg["api"]["host"] = "0.0.0.0"
+	cfg["keystone_authtoken"]["www_authenticate_uri"] = in.KeystoneAuthURL
+	if in.TrustDomainID != "" {
+		cfg["trust"]["trustee_domain_id"] = in.TrustDomainID
+	}
 
 	return cfg.String()
 }

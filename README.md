@@ -69,6 +69,8 @@ The operator expects an existing Yaook deployment in the target namespace: a
 | `api.ingress.fqdn` / `.port` | Public endpoint; the port is used to build the catalog URL |
 | `api.ingress.externalCertificateSecretRef` | Serve the Ingress with an existing TLS Secret (e.g. an ACME cert) |
 | `images.api` / `images.conductor` | Override container images |
+| `trust.domainName` / `trust.domainID` | Keystone trustee domain. Setting `domainID` lets Magnum skip a domain-admin authentication on every policy check |
+| `trust.domainAdminSecretRef` | Secret with `username`/`password` for the trustee domain admin; required to create clusters |
 | `magnumConfig` | Extra `magnum.conf` sections merged over the generated config |
 
 ## Images
@@ -82,15 +84,49 @@ Kolla images:
 These bundle `magnum-cluster-api-proxy`, so the Cluster API driver is available
 in-image.
 
+## Environment notes
+
+Three things were needed to make Magnum work against a Yaook control plane.
+They are handled by the operator, but are worth knowing:
+
+**MariaDB collation.** Magnum's migrations pin some tables to
+`utf8mb3_general_ci` explicitly (`cluster`) while others inherit the server
+default (`nodegroup`). Yaook's MariaDB defaults to `utf8mb3_unicode_ci`, so the
+`nodegroups_v2` migration dies with:
+
+```
+(1267, "Illegal mix of collations (utf8mb3_unicode_ci,IMPLICIT) and
+        (utf8mb3_general_ci,IMPLICIT) for operation '='")
+```
+
+Because MySQL DDL auto-commits, a failure part-way through leaves the schema
+ahead of the alembic stamp, and every retry then fails with a misleading
+`Duplicate column name 'stack_id'`. The operator sets the collation on the
+MySQLService it creates. Note that Yaook's config template currently ignores
+`mysqlConfig.mysqld.collation-server`, so on an already-provisioned database
+you may need `ALTER DATABASE <db> CHARACTER SET utf8mb3 COLLATE
+utf8mb3_general_ci` and a schema reset.
+
+**API bind address.** `magnum.conf`'s `[api] host` (not `host_ip`) defaults to
+`127.0.0.1`, which makes the container unreachable from both the Service and the
+kubelet's readiness probe. The operator forces `0.0.0.0`.
+
+**Trustee domain.** Magnum resolves the trustee domain on *every* policy check.
+If `[trust] trustee_domain_id` is unset it authenticates as the domain admin
+instead, and if `www_authenticate_uri` is also unset that fails with the
+unhelpful `'NoneType' object has no attribute 'rstrip'`. The operator always
+sets `www_authenticate_uri`, and `spec.trust.domainID` avoids the lookup
+entirely.
+
 ## Known limitations
 
 - **TLS terminates at the Ingress.** The internal endpoints are registered as
   plain HTTP inside the cluster, unlike the upstream Yaook services which run an
   `ssl-terminator` sidecar. Traffic to Keystone, MariaDB and RabbitMQ *is* TLS.
-- **No Keystone trustee domain is provisioned.** Magnum needs a dedicated domain
-  (`[trust] trustee_domain_name`) before it can create clusters on a user's
-  behalf. Yaook exposes no `KeystoneDomain` CRD, so this must currently be
-  created out of band.
+- **The trustee domain must be created out of band.** Yaook exposes no
+  `KeystoneDomain` CRD and the Magnum service user cannot create domains, so the
+  domain and its admin user have to be created once against Keystone; the
+  operator then consumes them via `spec.trust`.
 - Cluster creation additionally requires Octavia, a working external/provider
   network and a suitable Glance image. Those are deployment concerns, not
   operator concerns.

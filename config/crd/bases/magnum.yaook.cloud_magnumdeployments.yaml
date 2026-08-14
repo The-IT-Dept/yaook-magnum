@@ -174,6 +174,19 @@ spec:
                 required:
                 - ingress
                 type: object
+              backendCAIssuerRef:
+                description: |-
+                  BackendCAIssuerRef is the Issuer the infra-operator uses for the CA behind
+                  the MariaDB/RabbitMQ backends. Yaook's own deployments use the
+                  self-signed issuer created by the quickstart. Defaults to
+                  "selfsigned-issuer".
+                properties:
+                  name:
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
               conductor:
                 description: ConductorSpec configures the magnum-conductor deployment.
                 properties:
@@ -368,6 +381,36 @@ spec:
                 description: TargetRelease is the OpenStack release to deploy, e.g.
                   "2025.1".
                 type: string
+              trust:
+                description: |-
+                  TrustSpec configures the Keystone domain Magnum uses to hold the trustee
+                  users it creates on behalf of cluster owners.
+
+                  Magnum resolves the trustee domain on every policy check. If DomainID is set
+                  it is used directly; otherwise Magnum falls back to authenticating as the
+                  domain admin to look it up, which requires DomainAdminSecretRef.
+                properties:
+                  domainAdminSecretRef:
+                    description: |-
+                      DomainAdminSecretRef references a Secret with "username" and "password"
+                      keys for the trustee domain administrator. Required for creating clusters.
+                    properties:
+                      name:
+                        minLength: 1
+                        type: string
+                    required:
+                    - name
+                    type: object
+                  domainID:
+                    description: |-
+                      DomainID short-circuits Keystone auto-discovery. Strongly recommended:
+                      without it every policy check performs a domain-admin authentication.
+                    type: string
+                  domainName:
+                    description: DomainName is the name of the trustee domain, e.g.
+                      "magnum".
+                    type: string
+                type: object
             required:
             - api
             - database

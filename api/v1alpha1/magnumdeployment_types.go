@@ -135,6 +135,28 @@ type ImagesSpec struct {
 	Conductor string `json:"conductor,omitempty"`
 }
 
+// TrustSpec configures the Keystone domain Magnum uses to hold the trustee
+// users it creates on behalf of cluster owners.
+//
+// Magnum resolves the trustee domain on every policy check. If DomainID is set
+// it is used directly; otherwise Magnum falls back to authenticating as the
+// domain admin to look it up, which requires DomainAdminSecretRef.
+type TrustSpec struct {
+	// DomainName is the name of the trustee domain, e.g. "magnum".
+	// +optional
+	DomainName string `json:"domainName,omitempty"`
+
+	// DomainID short-circuits Keystone auto-discovery. Strongly recommended:
+	// without it every policy check performs a domain-admin authentication.
+	// +optional
+	DomainID string `json:"domainID,omitempty"`
+
+	// DomainAdminSecretRef references a Secret with "username" and "password"
+	// keys for the trustee domain administrator. Required for creating clusters.
+	// +optional
+	DomainAdminSecretRef *LocalObjectRef `json:"domainAdminSecretRef,omitempty"`
+}
+
 // MagnumDeploymentSpec defines the desired state of a Magnum deployment.
 type MagnumDeploymentSpec struct {
 	// KeystoneRef points at the KeystoneDeployment this service authenticates against.
@@ -143,6 +165,13 @@ type MagnumDeploymentSpec struct {
 	// IssuerRef is the cert-manager Issuer used for internal TLS, matching the
 	// issuerRef used by the upstream Yaook deployments.
 	IssuerRef LocalObjectRef `json:"issuerRef"`
+
+	// BackendCAIssuerRef is the Issuer the infra-operator uses for the CA behind
+	// the MariaDB/RabbitMQ backends. Yaook's own deployments use the
+	// self-signed issuer created by the quickstart. Defaults to
+	// "selfsigned-issuer".
+	// +optional
+	BackendCAIssuerRef *LocalObjectRef `json:"backendCAIssuerRef,omitempty"`
 
 	Region RegionSpec `json:"region"`
 
@@ -160,6 +189,9 @@ type MagnumDeploymentSpec struct {
 
 	// +optional
 	Images ImagesSpec `json:"images,omitempty"`
+
+	// +optional
+	Trust TrustSpec `json:"trust,omitempty"`
 
 	// MagnumConfig is merged into the generated magnum.conf. Outer keys are
 	// section names, inner keys are options. Values set here win over the

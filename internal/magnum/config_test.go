@@ -71,8 +71,8 @@ func TestPasswordsAreURLEscaped(t *testing.T) {
 
 func TestOverridesAreApplied(t *testing.T) {
 	out := Render(testInput(), map[string]map[string]string{
-		"DEFAULT":  {"debug": "true"},
-		"newsect":  {"foo": "bar"},
+		"DEFAULT": {"debug": "true"},
+		"newsect": {"foo": "bar"},
 	})
 	if !strings.Contains(out, "debug = true") {
 		t.Error("override of an existing option was not applied")
@@ -106,6 +106,25 @@ func TestRenderIsDeterministic(t *testing.T) {
 		if got := Render(in, overrides); got != first {
 			t.Fatalf("render is not deterministic on iteration %d", i)
 		}
+	}
+}
+
+// magnum-api defaults to binding 127.0.0.1, which is unreachable from the
+// kubelet probe and the Service. Regression test for that.
+func TestAPIBindsAllInterfaces(t *testing.T) {
+	out := Render(testInput(), nil)
+	if !strings.Contains(out, "host = 0.0.0.0") {
+		t.Errorf("expected [api] host = 0.0.0.0, got:\n%s", out)
+	}
+	if strings.Contains(out, "host_ip") {
+		t.Error("host_ip is not a valid magnum option; the bind option is [api] host")
+	}
+}
+
+func TestAPIBindCannotBeOverridden(t *testing.T) {
+	out := Render(testInput(), map[string]map[string]string{"api": {"host": "127.0.0.1"}})
+	if strings.Contains(out, "host = 127.0.0.1") {
+		t.Error("override was able to bind the API to loopback, which breaks readiness probes")
 	}
 }
 
