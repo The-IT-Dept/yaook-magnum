@@ -118,6 +118,29 @@ unhelpful `'NoneType' object has no attribute 'rstrip'`. The operator always
 sets `www_authenticate_uri`, and `spec.trust.domainID` avoids the lookup
 entirely.
 
+## Dashboard
+
+Yaook's `HorizonDeployment` has no image override (the horizon-operator pins the
+image from `targetRelease`) and Yaook's Horizon ships only the Designate and
+Octavia dashboards, so the Magnum panels cannot be enabled through the CRD.
+`dashboard/Dockerfile` builds the same Horizon image with `magnum-ui` added.
+
+Two things about that image are easy to get wrong:
+
+- **Apache serves Horizon from a source checkout, not from site-packages.**
+  The `WSGIScriptAlias` in `/etc/apache2/conf-available/horizon.conf` points at
+  `/horizon`, so panels registered under `site-packages/openstack_dashboard`
+  are silently ignored. The enabled files and static assets must go into that
+  tree, which is also where Yaook puts the Designate and Octavia panels.
+- **Horizon runs with `COMPRESS_OFFLINE` enabled.** Adding a dashboard changes
+  the SCSS bundle, so `collectstatic` alone is not enough; without a
+  `manage.py compress --force` pass, *every* page including the login page
+  fails with `OfflineGenerationError: ... key is missing from offline
+  manifest`.
+
+The image also installs a `LOGGING` config, because Yaook's Horizon ships an
+empty one and unhandled exceptions otherwise never reach the container log.
+
 ## Known limitations
 
 - **TLS terminates at the Ingress.** The internal endpoints are registered as
